@@ -3,6 +3,8 @@ const ErrorResponse = require("../utils/errorResponse");
 const asyncHandler = require("../middleware/async");
 const User = require("../models/User");
 const path = require("path");
+const sendEmail = require("../utils/sendEmail");
+const crypto = require("crypto");
 
 exports.register = asyncHandler(async (req, res, next) => {
   const { name, email, password, role } = req.body;
@@ -65,8 +67,74 @@ exports.forgotPassword = asyncHandler(async (req, res, next) => {
 
   const resetToken = user.getResetPasswordToken();
   await user.save({ validateBeforeSave: false });
+
+  const resetUrl = `${req.protocol}://${req.get(
+    "host"
+  )}/api/v1/auth/resetPassword/${resetToken}`;
+
+  const message = `Make a post request to ${resetUrl}`;
+  try {
+    await sendEmail({
+      email: user.email,
+      subject: "Password Reset",
+      message,
+    });
+    res.status(200).json({ success: true, message: "Email Sent" });
+  } catch (err) {
+    console.log(err);
+    //   user.getResetPasswordToken = undefined;
+    //   user.rese;
+    // }
+  }
   res.status(200).json({
     success: true,
     data: user,
   });
+});
+
+exports.resetPassword = asyncHandler(async (req, res, next) => {
+  const resetPasswordToken = crypto
+    .createHash("sha256")
+    .update(req.params.resettoken)
+    .digest("hex");
+
+  const user = await User.findOne({
+    resetPasswordToken,
+    resetPasswordExpire: { $gt: Date.now() },
+  });
+  if (!user) {
+    return next(new ErrorResponse("Invalid Token"), 400);
+  }
+
+  user.password = req.body.password;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpire = undefined;
+  await user.save();
+  sendTokenResponse(user, 200, res);
+});
+
+exports.updateDetails = asyncHandler(async (req, res, next) => {
+  const fieldsToUpdate = {
+    name: req.body.name,
+    email: req.body.email,
+  };
+  const user = await User.findById(req.user.id, fieldsToUpdate, {
+    new: true,
+    runValidators: true,
+  });
+
+  res.status(200).json({
+    success: true,
+    data: user,
+  });
+});
+
+exports.updatePassword = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.user.id).select("+password");
+  if (!(await user.matchedPassword(req.body.currentPassword))) {
+    return next(new ErrorResponse("Password is incorrect", 401));
+  }
+  user.password = req.body.newPassword;
+  await user.save();
+  sendTokenResponse(user, 200, res);
 });
